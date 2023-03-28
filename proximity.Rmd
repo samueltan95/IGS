@@ -1,0 +1,272 @@
+---
+title: "proximity"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+Download packages
+
+```{r}
+library(AER)
+library(visdat)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(leaps)
+library(car)
+library(ape)
+
+```
+
+Initial setup
+
+```{r}
+data <- read.csv("1 Datasets/Python/Master (LSOA).csv",header=TRUE);attach(data)
+data <- data[,c(seq(13,17),19,21,23,24,46)]
+
+vis_miss(data)
+head(data)
+nrow(data)
+
+```
+
+Exploratory Data Analysis (EDA) on response variables
+
+```{r}
+summary(proximity)
+data$proximity <- proximity
+attach(data)
+head(data)
+
+#We plot histograms for proximity and  log(proximity) to visualise the distribution
+
+ggplot(data=data)+
+  geom_histogram(aes(x=proximity, y=..density..))
+
+ggplot(data=data)+
+  geom_histogram(aes(x=log(proximity), y=..density..))
+
+#COMMENTS#
+#As expected, the graph of density of proximity is very positively skewed and the graph of log(proximity) is more normally distributed. We will further explore this transformation at a later stage.
+
+```
+
+
+Initial OLS model
+
+```{r}
+model <- lm(proximity~.,data=data)
+
+summary(model)
+
+```
+
+Inspecting individual relationship between continuous variables and proximity 
+
+```{r}
+cont.number <- c(1:9) #Column numbers in the data that contains continuous variables
+
+for (i in cont.number){
+  
+  model <- lm(paste('proximity~',(names(data))[i]), data = data)
+  
+  p1 <- ggplot(data,aes_string(x=(names(data))[i], y=(names(data))[10]))+
+    geom_point()+
+    geom_smooth(method=lm,se=F,colour="black")
+  
+  grid.arrange(p1,ncol=1)
+  
+}
+
+#COMMENTS#
+#Most have linear relationship with violent crime rates, but demographic-related variables seem to have influential points and outliers at first glance.
+
+#Checking for correlation
+cor(data.frame(EthWhite,EthMixed,EthAsian,EthBlack,UnE,LTHP.Prop,PoorHealth.Prop,MedianInc,MedianHousePrice,proximity))
+
+#COMMENTS#
+#Some factors have high correlation and we will have to check for multicollinearity 
+
+```
+
+Residual plots to check for heteroscedasticity and normality of residuals
+
+```{r}
+for (i in cont.number){
+  
+  model <- lm(paste('proximity~',(names(data))[i]), data = data)
+  
+  # QQ plot
+  p3 <- ggplot(model)+
+    stat_qq(aes(sample = .stdresid))+
+    geom_abline() +
+    labs(title = paste("QQ Residual Plot for",(names(data))[i]))
+  
+  # Standardized residual plot
+  p4 <- ggplot(model, aes(x = data[,i] , y = .stdresid))+
+    geom_point()+
+    labs(x=(names(data))[i],y="standardized residuals",title = paste("Residual Plot for",(names(data))[i]))
+    
+  grid.arrange(p3,p4,ncol=2)
+}
+
+#COMMENTS#
+#From the results of the residual Q-Q plots, it is evident that appropriate transformations have to be made for residuals to be more normally distributed
+#The standardised residual plots also show heteroscedasticity across all of the variables and this will be solved by transformation
+
+```
+
+Transformation
+
+```{r}
+#We apply transformations on both the independent and dependent variables and selected the results that provide the greatest correlation with the response variable
+#From the results above, we have seen that the response variable (proximity ) has to be transformed for the data to be normally distributed. 
+
+corr <- c(rep(NaN,10)) # This is a vector to store the correlation of each variable with proximity 
+
+#First, we observe the correlation between log(y) and x
+
+for (i in cont.number){
+  corr[i+1] <- cor(log(proximity),data[i])
+}
+
+corr <- corr[!is.na(corr)]
+corr <- data.frame(t(corr))
+
+#Applying transformation to x, we observe the correlation between log(y) and log(x)
+for (i in cont.number){
+  corr[2,i] <- cor(log(proximity),log(data[i]))
+}
+
+#Add headings and row names into the data frame
+corr <-
+setNames(corr,c('EthWhite','EthMixed','EthAsian','EthBlack','UnE','LTHP.Prop','PoorHealth.Prop','MedianInc','MedianHousePrice'))
+rownames(corr) <- c("Before: log(y) vs. x","After: log(y) vs. log(x)")
+corr
+
+#Apply transformation to the dataset
+data.transf <- data 
+data.transf$proximity <- log(proximity)
+data.transf$EthMixed <- log(EthMixed)
+data.transf$EthAsian <- log(EthAsian)
+data.transf$EthBlack <- log(EthBlack)
+data.transf$LTHP.Prop <- log(LTHP.Prop)
+data.transf$MedianHousePrice <- log(MedianHousePrice)
+
+detach(data)
+attach(data.transf)
+
+```
+
+Compare Q-Q plots
+
+```{r}
+for (i in cont.number){
+  model <- lm(paste('proximity~',(names(data.transf))[i]), data=data.transf)
+  
+  p5 <- ggplot(model)+
+    stat_qq(aes(sample=.stdresid))+
+    geom_abline()+
+    labs(title = paste("QQ Residual Plot for",names(data.transf)[i]))
+
+  print(p5)
+}
+
+#COMMENTS#
+#Although the residuals are not perfectly normal, the distribution has improved after the transformation
+
+```
+
+Model after data transformation
+
+```{r}
+model.transf <- lm(proximity~.,data=data.transf)
+summary(model.transf)
+
+#COMMENTS#
+#Overall, the model is significant. However, when examining individual p-values, there are a few insignificant coefficients. Hence we have to perform variable selection to keep the essential variables. Before that, we will first remove the outliers using Cook's Distance.
+
+```
+
+Remove outliers using Cook's Distance
+
+```{r}
+thresh <- 4/nrow(data.transf) #threshold of 2p/n 
+
+ggplot(model.transf, aes(seq_along(.cooksd), .cooksd)) +
+  geom_col()+
+  geom_hline(yintercept = thresh , linetype='dashed' , color='red')+
+  xlab("Observation number")+
+  ylab("Cook's D")
+
+cooksd <- cooks.distance(model.transf)
+outliers <- as.numeric(names(cooksd)[cooksd > thresh]) #239 outliers
+data.transf <- data.transf[-outliers,]
+
+model.transf <- lm(proximity~.,data=data.transf)
+summary(model.transf)
+
+```
+
+Variable Selection
+
+```{r}
+#Best subsets
+mbs <- leaps::regsubsets(proximity~ ., nvmax=11,data=data.transf)
+plot(mbs, scale="bic")
+
+#Backward selection
+mb <- step(model.transf, trace=0)
+summary(mb)
+mb <- step(model.transf)
+summary(mb)
+
+#Forward selection
+null <- lm(proximity~1, data=data.transf)
+full <- lm(proximity~.,data=data.transf)
+mf <- step(null, scope=list(lower=null, upper=full),direction="forward", trace=0)
+summary(mf)
+
+#COMMENTS#
+#By observing all 3 methods, we can drop afam and male
+#The best subset method dropped further variables of regionMidWest and regionSouth and hence will carry out a partial F-test to investigate
+
+```
+
+Variable Selection: Checking results
+
+```{r}
+#We confirm dropping EthMixed and EthBlack using an F-test
+unrestricted <- lm(proximity~., data=data.transf)
+restricted <- lm(proximity~.-EthMixed-EthBlack, data=data.transf)
+anova(restricted,unrestricted)
+
+#p-value = 0.5002 > 0.05 hence we reject the unrestricted model at 5% significance level 
+
+data.new <- dplyr::select(data.transf, -c(EthMixed,EthBlack))
+detach(data.transf);attach(data.new)
+
+```
+
+Checking the proposed model for multicollinearity
+
+```{r}
+cor(data.new[, c(1:7)])
+model.proposed <- lm(proximity~., data=data.new)
+car::vif(model.proposed)
+
+model.proposed <- lm(proximity~.-MedianInc, data=data.new)
+car::vif(model.proposed)
+#All values are below 5 which suggests that multicollinearity is not an issue
+
+model.final <- model.proposed
+summary(model.final)
+
+```
+tinytex::install_tinytex()

@@ -1,0 +1,46 @@
+---
+title: "corrmatrix"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+Download packages
+
+```{r}
+library(AER)
+library(visdat)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(leaps)
+library(car)
+library(ape)
+
+```
+
+Initial setup
+
+```{r}
+data <- read.csv("1 Datasets/Python/Master (LSOA).csv",header=TRUE);attach(data)
+data <- data[,c(35, 45, 46, 50,51)]
+
+vis_miss(data)
+head(data)
+nrow(data)
+
+```
+
+Correlation Matrix
+
+```{r}
+install.packages("PerformanceAnalytics", repos = "http://cran.us.r-project.org")
+library("PerformanceAnalytics")
+chart.Correlation(data, histogram=TRUE)
+
+```
+

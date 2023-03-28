@@ -1,0 +1,214 @@
+---
+title: "density"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+Download packages
+
+```{r}
+library(AER)
+library(visdat)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(leaps)
+library(car)
+library(arm)
+library(ape)
+
+```
+
+Initial setup
+
+```{r}
+data <- read.csv("1 Datasets/Python/Master (LSOA).csv",header=TRUE);attach(data)
+data <- data[,c(seq(13,17),19,21,23,24,51)]
+
+vis_miss(data)
+head(data)
+nrow(data)
+
+```
+
+Exploratory Data Analysis (EDA) on response variables
+
+```{r}
+summary(density)
+mean(density)
+var(density)
+
+#We plot histograms for density and  log(density) to visualise the distribution
+
+hist(density)
+
+#COMMENTS#
+#As expected, the graph of density of density is very positively skewed and the graph of log(density) is more normally distributed. We will further explore this transformation at a later stage.
+
+```
+
+
+Initial OLS model
+
+```{r}
+model <- glm(density~., family=poisson(link="log"),data=data)
+
+summary(model)
+
+```
+
+Transformation
+
+```{r}
+#We apply transformations on both the independent and dependent variables and selected the results that provide the greatest correlation with the response variable
+#From the results above, we have seen that the response variable (density) has to be transformed for the data to be normally distributed. 
+
+cont.number <- c(1:9)
+corr <- c(rep(NaN,9)) # This is a vector to store the correlation of each variable with density 
+
+#First, we observe the correlation between log(y) and x
+
+for (i in cont.number){
+  corr[i+1] <- cor(density,data[i])
+}
+
+corr <- corr[!is.na(corr)]
+corr <- data.frame(t(corr))
+
+#Applying transformation to x, we observe the correlation between log(y) and log(x)
+for (i in cont.number){
+  corr[2,i] <- cor(density,log(data[i]))
+}
+
+#Add headings and row names into the data frame
+corr <-
+setNames(corr,c('EthWhite','EthMixed','EthAsian','EthBlack','UnE','LTHP.Prop','PoorHealth.Prop', 'MedianInc','MedianHousePrice'))
+rownames(corr) <- c("Before: log(y) vs. x","After: log(y) vs. log(x)")
+corr
+
+#Apply transformation to the dataset
+data.transf <- data 
+data.transf$EthWhite <- log(EthWhite)
+data.transf$EthMixed <- log(EthMixed)
+data.transf$EthBlack <- log(EthBlack)
+data.transf$LTHP.Prop <- log(LTHP.Prop)
+data.transf$PoorHealth.Prop <- log(PoorHealth.Prop)
+data.transf$MedianInc <- log(MedianInc)
+data.transf$MedianHousePrice <- log(MedianHousePrice)
+
+detach(data)
+attach(data.transf)
+
+```
+
+Model after data transformation
+
+```{r}
+model.transf <- glm(density~.,family=poisson(link="log"),data=data.transf)
+summary(model.transf)
+
+#COMMENTS#
+#Overall, the model is significant. However, when examining individual p-values, there are a few insignificant coefficients. Hence we have to perform variable selection to keep the essential variables. Before that, we will first remove the outliers using Cook's Distance.
+
+```
+
+Remove outliers using Cook's Distance
+
+```{r}
+thresh <- 4/nrow(data.transf) #threshold of 2p/n 
+
+ggplot(model.transf, aes(seq_along(.cooksd), .cooksd)) +
+  geom_col()+
+  geom_hline(yintercept = thresh , linetype='dashed' , color='red')+
+  xlab("Observation number")+
+  ylab("Cook's D")
+
+cooksd <- cooks.distance(model.transf)
+outliers <- as.numeric(names(cooksd)[cooksd > thresh]) #342 outliers
+data.transf <- data.transf[-outliers,]
+
+model.transf <- glm(density~.,family=poisson(link="log"),data=data.transf)
+summary(model.transf)
+
+```
+
+Variable Selection
+
+```{r}
+#Best subsets
+mbs <- leaps::regsubsets(density~ ., nvmax=11,data=data.transf)
+plot(mbs, scale="bic")
+
+#Backward selection
+mb <- step(model.transf, trace=0)
+summary(mb)
+mb <- step(model.transf)
+summary(mb)
+
+#Forward selection
+null <- glm(density~1,family=poisson(link="log"),data=data.transf)
+full <- glm(density~.,family=poisson(link="log"),data=data.transf)
+mf <- step(null, scope=list(lower=null, upper=full),direction="forward", trace=0)
+summary(mf)
+
+#COMMENTS#
+#By observing all 3 methods, we can drop afam and male
+#The best subset method dropped further variables of regionMidWest and regionSouth and hence will carry out a partial F-test to investigate
+
+```
+
+Variable Selection: Checking results
+
+```{r}
+#We confirm dropping MedianHousePrice using an F-test
+unrestricted <- glm(density~., family=poisson(link="log"),data=data.transf)
+restricted <- glm(density~.-MedianHousePrice, family=poisson(link="log"),data=data.transf)
+anova(restricted,unrestricted, test="Chisq")
+
+#p-value = 0.8988 > 0.05 hence we reject the unrestricted model at 5% significance level 
+
+unrestricted <- glm(density~., family=poisson(link="log"),data=data.transf)
+restricted <- glm(density~.-EthMixed, family=poisson(link="log"),data=data.transf)
+anova(restricted,unrestricted,test="Chisq")
+
+#p-value = 0.005087 < 0.05 hence we do not reject the unrestricted model at 5% significance level 
+
+unrestricted <- glm(density~., family=poisson(link="log"),data=data.transf)
+restricted <- glm(density~.-UnE, family=poisson(link="log"),data=data.transf)
+anova(restricted,unrestricted,test="Chisq")
+
+#p-value = 0.02108 < 0.05 hence we do not reject the unrestricted model at 5% significance level 
+
+unrestricted <- glm(density~., family=poisson(link="log"),data=data.transf)
+restricted <- glm(density~.-EthAsian, family=poisson(link="log"),data=data.transf)
+anova(restricted,unrestricted,test="Chisq")
+
+#p-value = 0.0005751 < 0.05 hence we do not reject the unrestricted model at 5% significance level 
+
+#As a whole, EthMixed, UnE and EthBlack are highly significant and hence should be retained in the model
+
+data.new <- dplyr::select(data.transf,-c(MedianHousePrice))
+detach(data.transf);attach(data.new)
+
+```
+
+Checking the proposed model for multicollinearity
+
+```{r}
+cor(data.new[, c(1:8)])
+model.proposed <- glm(density~.,family=poisson(link="log"), data=data.new)
+car::vif(model.proposed)
+
+model.proposed <- glm(density~.-PoorHealth.Prop-EthWhite, family=poisson(link="log"), data=data.new)
+car::vif(model.proposed)
+#All values are below 5 which suggests that multicollinearity is not an issue
+
+model.final <- model.proposed
+summary(model.final)
+
+```
